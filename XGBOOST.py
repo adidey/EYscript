@@ -8,8 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 import datetime
 
-# Helper Functions (RSI calculation remains unchanged)
-def calculate_rsi(prices, period=14):
+def calculate_rsi(prices, period= 14):
     delta = prices.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -67,7 +66,7 @@ def evaluate_model(model, X_test_scaled, y_test):
 
     print(f"Mean Squared Error (MSE): {mse:.4f}")
     print(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
-    print(f"Mean Absolute Percentage Error (MAPE): {mape * 100:.2f}%")
+    print(f"Mean Absolute Percentage Error (MAPE): {mape * 100:.6f}%")
     return mse, rmse, mape
 
 
@@ -104,20 +103,21 @@ def main():
 
     raw_data = fetch_yfinance_data(ticker, years)
     if raw_data.empty:
-        return
+        print(f"Error: Could not retrieve data for ticker {ticker}")
+        return 
 
     data = add_features(raw_data)
 
     param_grid = {  # Example parameter grid, adjust as needed
-        'n_estimators': [200, 300, 400, 500],
-        'learning_rate': [0.01, 0.05, 0.1, 0.08],
-        'max_depth': [3, 5, 7 , 9]
+        'n_estimators': [200, 250 , 300, 350, 400, 450, 500],
+        'learning_rate': [0.01, 0.03, 0.05, 0.07, 0.1],
+        'max_depth': [3, 5, 7, 9]
     }
 
     model = XGBRegressor(random_state=42)
     scaler = StandardScaler()
 
-    tscv = TimeSeriesSplit(n_splits=3)  # Reduced for faster tuning
+    tscv = TimeSeriesSplit(n_splits=5)  # Reduced for faster tuning
     grid_search = GridSearchCV(model, param_grid, scoring='neg_mean_squared_error', cv=tscv, n_jobs=-1)
 
     features = ['Moving Average', 'Volatility', 'EMA', 'Momentum', 'RSI']
