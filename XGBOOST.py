@@ -1,27 +1,14 @@
-# This script uses an XGBoost Classifier to predict whether the next day's closing price will be higher or lower than the current day's closing price 
-# (a binary classification problem). It includes technical indicators like moving average, volatility, EMA, momentum, and RSI. 
-# The script also has portfolio management features similar to linear.py.
-
-import os
-import requests
-import datetime as dt
+from matplotlib import pyplot as plt
+import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import accuracy_score
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from sklearn.preprocessing import StandardScaler
-from xgboost import XGBClassifier
-import matplotlib.pyplot as plt
+from xgboost import XGBRegressor
+import datetime
 
-# API Keys
-POLYGON_API_KEY = "F9NEtqzR2Tkk60wQ2pvFPCjLkMZBz3n6"
-
-
-# Global Variables
-scaler = StandardScaler()
-bought_stocks = {}
-
-# Helper Functions
+# Helper Functions (RSI calculation remains unchanged)
 def calculate_rsi(prices, period=14):
     delta = prices.diff()
     gain = delta.where(delta > 0, 0)
@@ -32,32 +19,21 @@ def calculate_rsi(prices, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-def fetch_polygon_data(ticker, from_date, to_date):
-    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}?apiKey={POLYGON_API_KEY}"
+def fetch_yfinance_data(ticker, years):
+    """Fetches historical data using yfinance for the past 'years'."""
+    end_date = datetime.date.today()
+    start_date = end_date - datetime.timedelta(days=years * 365)
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("results", [])
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching data for {ticker}: {e}")
-        return []
-
-def preprocess_data(data):
-    if data:
-        df = pd.DataFrame(data)
-        df['t'] = pd.to_datetime(df['t'], unit='ms')
-        df.set_index('t', inplace=True)
+        df = yf.download(ticker, start=start_date, end=end_date)
+        # Rename columns for consistency
         df.rename(columns={
-            'v': 'volume',
-            'vw': 'vwap',
-            'o': 'open',
-            'c': 'close',
-            'h': 'high',
-            'l': 'low'
+            'Open': 'open', 'High': 'high', 'Low': 'low',
+            'Close': 'close', 'Adj Close': 'adj_close', 'Volume': 'volume'
         }, inplace=True)
-        return df.dropna()
-    return pd.DataFrame()
+        return df
+    except Exception as e:
+        print(f"Error fetching data for {ticker}: {e}")
+        return pd.DataFrame()
 
 def add_features(df):
     df['Moving Average'] = df['close'].rolling(window=5).mean()
@@ -68,87 +44,113 @@ def add_features(df):
     df.dropna(inplace=True)
     return df
 
-# Training Function
-def train_model(data):
+def train_and_predict(data, model, scaler):
     features = ['Moving Average', 'Volatility', 'EMA', 'Momentum', 'RSI']
     X = data[features]
-    y = np.where(data['close'].shift(-1) > data['close'], 1, 0)
-
+    y = data['close']
+    
     X_scaled = scaler.fit_transform(X)
-    tscv = TimeSeriesSplit(n_splits=5)
-    accuracies = []
+    model.fit(X_scaled, y)
 
-    for train_index, test_index in tscv.split(X_scaled):
-        X_train, X_test = X_scaled[train_index], X_scaled[test_index]
-        y_train, y_test = y[train_index], y[test_index]
+    latest_data = data.tail(1)
+    latest_X = latest_data[features]
+    latest_X_scaled = scaler.transform(latest_X)
 
-        model = XGBClassifier(n_estimators=200, learning_rate=0.05, max_depth=6, random_state=42)
-        model.fit(X_train, y_train)
+    next_day_prediction = model.predict(latest_X_scaled)
+    return next_day_prediction[0]
 
-        y_pred = model.predict(X_test)
-        accuracies.append(accuracy_score(y_test, y_pred))
+def evaluate_model(model, X_test_scaled, y_test):
+    y_pred = model.predict(X_test_scaled)
+    mse = mean_squared_error(y_test, y_pred)
+    rmse = np.sqrt(mse)
+    mape = mean_absolute_percentage_error(y_test, y_pred)
 
-    print(f"Average Model Accuracy: {np.mean(accuracies) * 100:.2f}%")
-    return model
+    print(f"Mean Squared Error (MSE): {mse:.4f}")
+    print(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
+    print(f"Mean Absolute Percentage Error (MAPE): {mape * 100:.2f}%")
+    return mse, rmse, mape
 
-# Portfolio Analysis
-def analyze_portfolio():
-    results = []
-    for ticker, info in bought_stocks.items():
-        closing_price = fetch_polygon_data(ticker, info['Date'], info['Date'])
-        if closing_price:
-            try:
-                market_price = closing_price[-1]['c']  # Use 'c' for closing price
-                profit_loss = (market_price - info['Buy Price']) * info['Shares']
 
-                results.append({
-                    **info,
-                    'Market Price': market_price,
-                    'Profit/Loss': profit_loss,
-                })
-            except KeyError:
-                print(f"Error: 'c' key missing for {ticker} data.")
-        else:
-            print(f"No data returned for {ticker} on {info['Date']}")
-    return pd.DataFrame(results)
+def walk_forward_validation(data, model, scaler, train_size=0.8):  # Added train_size parameter
+    features = ['Moving Average', 'Volatility', 'EMA', 'Momentum', 'RSI']
+    X = data[features]
+    y = data['close']
+    
+    split_index = int(len(X) * train_size)  # Determine split point based on train_size
+    X_train, X_test = X.iloc[:split_index], X.iloc[split_index:]
+    y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
 
-def save_results(results):
-    results.to_csv("portfolio_analysis.csv", index=False)
-    print("Results saved to portfolio_analysis.csv")
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
 
-def plot_portfolio(results):
-    plt.bar(results['Ticker'], results['Profit/Loss'])
-    plt.xlabel("Ticker")
-    plt.ylabel("Profit/Loss")
-    plt.title("Portfolio Analysis")
-    plt.show()
 
-# User Input and Main Menu
-def get_user_input():
-    ticker = input("Enter stock ticker: ").upper()
-    date_str = input("Enter buy date (YYYY-MM-DD): ")
-    shares = int(input("Enter shares bought: "))
-    buy_price = float(input("Enter buy price: "))
+    model.fit(X_train_scaled, y_train)  # Train on the in-sample set
 
-    return {"Ticker": ticker, "Shares": shares, "Buy Price": buy_price, "Date": date_str}
+    # Predict on both the in-sample (for comparison) and out-of-sample (true next-day prediction)
+    in_sample_predictions = model.predict(X_train_scaled)
+    out_of_sample_predictions = model.predict(X_test_scaled)
+
+    # Evaluate In-Sample Predictions
+    mse_in, rmse_in, mape_in = evaluate_model(model, X_train_scaled, y_train)
+
+    # Evaluate Out-of-Sample Predictions
+    mse_out, rmse_out, mape_out = evaluate_model(model, X_test_scaled, y_test)
+
+    return in_sample_predictions, out_of_sample_predictions
 
 def main():
-    while True:
-        choice = input("Enter 'a' to add, 'v' to view, 's' to save, 'p' to plot, 'q' to quit: ").lower()
-        if choice == 'q':
-            break
-        elif choice == 'a':
-            stock_info = get_user_input()
-            bought_stocks[stock_info['Ticker']] = stock_info
-        elif choice == 'v':
-            results = analyze_portfolio()
-            print(results)
-        elif choice == 's':
-            results = analyze_portfolio()
-            save_results(results)
-        elif choice == 'p':
-            results = analyze_portfolio()
-            plot_portfolio(results)
+    ticker = input("Enter stock ticker: ").upper()
+    years = 10 
+
+    raw_data = fetch_yfinance_data(ticker, years)
+    if raw_data.empty:
+        return
+
+    data = add_features(raw_data)
+
+    param_grid = {  # Example parameter grid, adjust as needed
+        'n_estimators': [200, 300, 400, 500],
+        'learning_rate': [0.01, 0.05, 0.1, 0.08],
+        'max_depth': [3, 5, 7 , 9]
+    }
+
+    model = XGBRegressor(random_state=42)
+    scaler = StandardScaler()
+
+    tscv = TimeSeriesSplit(n_splits=3)  # Reduced for faster tuning
+    grid_search = GridSearchCV(model, param_grid, scoring='neg_mean_squared_error', cv=tscv, n_jobs=-1)
+
+    features = ['Moving Average', 'Volatility', 'EMA', 'Momentum', 'RSI']
+    X = data[features]
+    y = data['close']
+    X_scaled = scaler.fit_transform(X)  # Fit on all data for GridSearchCV
+
+    grid_search.fit(X_scaled, y)
+    best_model = grid_search.best_estimator_
+    print(f"Best parameters found: {grid_search.best_params_}")
+
+    walk_forward_validation(data.copy(), best_model, scaler)
+
+    # Walk-forward validation and prediction
+    in_sample_preds, out_of_sample_preds = walk_forward_validation(data.copy(), best_model, scaler, train_size=0.9)
+
+    next_day_price = train_and_predict(data, best_model, scaler)
+    print(f"Predicted closing price for next day: {next_day_price:.2f}")
+
+    # Plot predictions and actual values
+    plt.figure(figsize=(12, 6))
+    plt.plot(data.index, data['close'], label='Actual Close Price')
+    plt.plot(data.index[:len(in_sample_preds)], in_sample_preds, label='In-Sample Predictions', linestyle='--')
+
+    # Plot out-of-sample predictions, aligning the index to the test set's index.
+    plt.plot(data.index[-len(out_of_sample_preds):], out_of_sample_preds, label='Out-of-Sample Predictions', linestyle='-.')
+
+    plt.xlabel('Date')
+    plt.ylabel('Price')
+    plt.title(f'{ticker} Price Predictions')
+    plt.legend()
+    plt.show()
+
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,6 @@
 # but the prediction part is focused on volatility. It also has an incomplete add_features function and lacks a full implementation for model deployment. 
 # Note: The trading recommendation logic seems flawed as it doesn't consider the buy price. 
 # It's also unclear how 'Moving Average', 'Volatility' are calculated before being used in the prediction.
-
 import os
 import requests
 import datetime as dt
