@@ -101,8 +101,26 @@ def main():
 
     data = add_features(raw_data)
 
+    param_grid = {
+        'fit_intercept': [True, False],  # Example: try with and without intercept
+        'positive': [True, False],
+        'copy_X': [True, False],
+        'n_jobs': [-1]
+    }
+
     model = LinearRegression()
     scaler = StandardScaler()
+    tscv = TimeSeriesSplit(n_splits=5)
+    grid_search = GridSearchCV(model, param_grid, scoring= 'neg_mean_squared_error', cv=tscv, n_jobs=-1)
+    
+    features = ['Moving Average', 'Volatility', 'EMA', 'Momentum', 'RSI']
+    X = data[features]
+    y = data['close']
+    X_scaled = scaler.fit_transform(X)
+
+    grid_search.fit(X_scaled, y)
+    best_model = grid_search.best_estimator_
+    print(f"Best parameters found: {grid_search.best_params_}")
 
     in_sample_preds, out_of_sample_preds = walk_forward_validation(data.copy(), model, scaler, train_size=0.9)
 
